@@ -1,0 +1,22 @@
+# Illustrative AS-relationship data, CAIDA "serial-2" format: as1|as2|relationship
+# relationship = -1 -> as1 is PROVIDER of as2 (as2 is the customer)
+# relationship =  0 -> as1 and as2 are settlement-free PEERS
+#
+# This is a tiny, hand-built demo subset, NOT the real CAIDA dataset. The
+# well-known Tier-1/Tier-2 transit ASNs below (174 Cogent, 3356 Lumen,
+# 6939 Hurricane Electric, 1299 Arelion) are real, public ASNs used here
+# only in their well-documented public role as transit/backbone networks --
+# the specific "customer" relationships are fictional demo ASNs in the
+# IANA-reserved private-use range (64512-65534), invented for this demo.
+#
+# For production-grade valley-free checking, download the real dataset from
+# https://publicdata.caida.org/datasets/as-relationships/serial-2/ and point
+# --relationships at it instead.
+174|64512|-1
+3356|64513|-1
+6939|64514|-1
+174|3356|0
+6939|1299|0
+1299|64515|-1
+64512|64520|-1
+64512|64513|0
