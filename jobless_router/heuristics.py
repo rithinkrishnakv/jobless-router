@@ -50,7 +50,14 @@ def targeted_mitm_score(
     if on_watchlist:
         score += 30
     if not has_business_relationship:
-        score += 20
+        # Weak signal, deliberately: CAIDA's relationship data is known to
+        # be thin for regional/domestic peering (e.g. a local ISP privately
+        # peering with a national carrier at a regional IXP). "No known
+        # relationship" is genuinely ambiguous between "no relationship
+        # exists" and "CAIDA just doesn't have it" -- so it contributes a
+        # little, but a real valley-free violation (which IS explicit,
+        # structural evidence) is weighted twice as heavily below.
+        score += 10
     if not valley.is_valley_free:
         score += 20
     if rpki.state == RPKIState.INVALID_ASN:

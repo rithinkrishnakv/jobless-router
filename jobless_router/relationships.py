@@ -16,12 +16,32 @@ RFC 7908 uses to define a route leak: a legitimate BGP path can only travel
 zero-or-more customer->provider ('up') hops, then optionally a single
 peer-to-peer hop, then zero-or-more provider->customer ('down') hops. Once
 a path has gone 'down' or used its one peer hop, it can never legitimately
-go 'up' again. When it does, that's almost always a route leak: a customer
-route got handed to a peer (or provider) who re-advertised it as if they
-had transit rights to it.
+go 'up' again. When it does, that's almost always a route leak.
+
+Two things the naive version of this check gets wrong, both fixed here:
+
+1. AS-path prepending. [..., 18101, 18101, 18101] must not be walked as
+   three separate hops -- it's one hop, repeated for traffic engineering.
+   Collapsing consecutive duplicates before walking the path is required;
+   relying on CAIDA simply not mapping self-edges to "accidentally" skip
+   prepends is fragile and not an actual invariant.
+
+2. Unmapped intermediate ASNs (most commonly an IXP route server, which
+   operates as a transparent BGP next-hop and is rarely present in CAIDA's
+   relationship data at all). A naive pairwise walk that just does
+   `continue` on an unknown relationship silently severs the chain: it
+   never actually checks whether the AS *before* the unknown hop and the
+   AS *after* it have a real relationship, because each side of the gap
+   only ever gets compared to the unknown ASN itself. Any leak that
+   transits an unmapped hop becomes invisible. The fix is an anchored
+   walk: keep the last AS we successfully classified a transition from as
+   an anchor, and when the next hop's relationship is unknown, don't
+   advance the anchor -- try the anchor against the hop *after* that
+   instead, bridging across the gap until a known relationship is found.
 """
 from typing import Dict, List, Optional, Tuple
 from .models import ValleyCheck
+from .path_analysis import collapse_consecutive_duplicates
 
 PROVIDER_TO_CUSTOMER = -1
 PEER_TO_PEER = 0
@@ -60,33 +80,35 @@ class RelationshipGraph:
 
 
 def valley_free_check(as_path: List[int], graph: RelationshipGraph) -> ValleyCheck:
-    if len(as_path) < 2:
+    collapsed = collapse_consecutive_duplicates(as_path)
+    if len(collapsed) < 2:
         return ValleyCheck(True, None, "Path too short to evaluate.")
 
-    hops = list(reversed(as_path))  # walk origin -> observer
+    hops = list(reversed(collapsed))  # walk origin -> observer
     phase = "up"
     unknown_hops = 0
+    anchor_idx = 0  # index into `hops` of the last AS we actually classified a transition from
 
-    for i in range(len(hops) - 1):
-        a, b = hops[i], hops[i + 1]
+    i = 1
+    while i < len(hops):
+        a, b = hops[anchor_idx], hops[i]
         rel = graph.relationship(a, b)
-        if rel is None:
-            unknown_hops += 1
-            continue  # no relationship data for this hop -- can't judge it, don't penalize
 
-        if rel == "c2p":
-            step = "up"
-        elif rel == "p2c":
-            step = "down"
-        else:
-            step = "peer"
+        if rel is None:
+            # Bridge across the unmapped hop (e.g. an IXP route server)
+            # instead of severing the chain -- keep the same anchor and
+            # try it against the next hop further down the path.
+            unknown_hops += 1
+            i += 1
+            continue
+
+        step = "up" if rel == "c2p" else "down" if rel == "p2c" else "peer"
 
         if phase == "up":
             if step == "peer":
                 phase = "peer"
             elif step == "down":
                 phase = "down"
-            # step == "up": stay in 'up'
         elif phase == "peer":
             if step == "down":
                 phase = "down"
@@ -98,5 +120,8 @@ def valley_free_check(as_path: List[int], graph: RelationshipGraph) -> ValleyChe
             if step != "down":
                 return ValleyCheck(False, i, f"AS{a}->AS{b} goes '{step}' after the path already turned downstream -- classic route-leak valley.")
 
-    note = "Valley-free." if unknown_hops == 0 else f"Valley-free over known hops ({unknown_hops} hop(s) had no relationship data)."
+        anchor_idx = i
+        i += 1
+
+    note = "Valley-free." if unknown_hops == 0 else f"Valley-free over known hops ({unknown_hops} hop(s) bridged across unmapped ASNs, e.g. IXP route servers)."
     return ValleyCheck(True, None, note)
