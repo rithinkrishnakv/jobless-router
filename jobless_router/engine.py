@@ -34,7 +34,7 @@ class JoblessRouterEngine:
     def _on_watchlist(self, prefix: str) -> bool:
         return prefix in self.watchlist
 
-    def process(self, event: AnnouncementEvent, forced_rpki: Optional[RPKIState] = None) -> Optional[Incident]:
+    def process(self, event: AnnouncementEvent, forced_rpki: Optional[RPKIState] = None, debug_callback=None) -> Optional[Incident]:
         origin = event.origin_asn
         if origin is None:
             return None
@@ -65,8 +65,14 @@ class JoblessRouterEngine:
         interesting = rpki_verdict.state in (RPKIState.INVALID_ASN, RPKIState.INVALID_LENGTH) or (
             novel and rpki_verdict.state != RPKIState.VALID
         )
-        if not interesting:
-            return None  # clean, baseline-consistent (or RPKI-confirmed) route -- correctly stays silent
+
+        # In normal operation (no debug_callback), an uninteresting event
+        # returns immediately -- no point doing path/valley/heuristic work
+        # on traffic nobody asked to see scored. debug_callback exists
+        # specifically to override that and force full scoring on every
+        # event, for verifying *why* the engine is or isn't flagging things.
+        if not interesting and debug_callback is None:
+            return None
 
         anomaly = path_analysis.detect_path_anomaly(event.as_path)
         valley = valley_free_check(event.as_path, self.graph)
@@ -82,6 +88,12 @@ class JoblessRouterEngine:
             path_poisoned=(anomaly.kind == "POISONING"),
         )
         intent = heuristics.classify_intent(ff_score, mitm_score, blackhole=blackhole, rpki_valid=(rpki_verdict.state == RPKIState.VALID))
+
+        if debug_callback is not None:
+            debug_callback(event, upstream, rpki_verdict, novel, novel_note, ff_score, mitm_score, intent, interesting)
+
+        if not interesting:
+            return None
 
         key = f"{event.prefix}|{origin}"
         self.blast.record(key, event.collector)

@@ -51,9 +51,17 @@ def run_replay(path: str, relationships: str, watchlist, db_dir: str):
     print(f"[jobless-router] replay complete: {flagged}/{total} event(s) flagged as incidents.")
 
 
-def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None):
+def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None, debug=False):
     engine = JoblessRouterEngine(relationships_path=relationships, watchlist=watchlist, db_dir=db_dir)
     state = {"count": 0, "incidents": 0}
+
+    def debug_print(event, upstream, rpki_verdict, novel, novel_note, ff_score, mitm_score, intent, interesting):
+        print(
+            f"[debug] AS{event.origin_asn} {event.prefix} via AS{upstream} | "
+            f"RPKI={rpki_verdict.state.value} novel={novel} | "
+            f"FF={ff_score}/100 MITM={mitm_score}/100 -> {intent.label} | "
+            f"interesting={interesting}"
+        )
 
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
@@ -102,7 +110,9 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
                     # network call (the RPKI check), and running that directly
                     # inside this coroutine corrupts asyncio's cleanup if the
                     # user hits Ctrl+C mid-request.
-                    incident = await asyncio.to_thread(engine.process, event)
+                    incident = await asyncio.to_thread(
+                        engine.process, event, None, debug_print if debug else None
+                    )
                     if incident:
                         state["incidents"] += 1
                         print(engine.render_incident(incident))
@@ -152,6 +162,7 @@ def main():
     parser.add_argument("--live", action="store_true", help="Connect to the real RIPE RIS Live firehose.")
     parser.add_argument("--prefix", default=None, help="With --live, subscribe to only this prefix (e.g. 1.1.1.0/24) instead of the full global firehose.")
     parser.add_argument("--host", default=None, help="With --live, subscribe to only this RIS collector (e.g. rrc00) -- all prefixes it sees, real continuous traffic.")
+    parser.add_argument("--debug", action="store_true", help="With --live, print RPKI/score/verdict for every event, including ones that don't get flagged -- use this to verify the engine is actually evaluating traffic, not just to trust the silence.")
     parser.add_argument("--relationships", default="data/sample_as_relationships.txt", help="CAIDA-format AS relationship file.")
     parser.add_argument("--watchlist", default="data/watchlist.json", help="JSON list of critical prefixes to watch.")
     parser.add_argument("--db-dir", default=":memory:", help="Directory for sqlite threat/baseline DBs, or ':memory:' for an ephemeral run.")
@@ -163,7 +174,7 @@ def main():
     if args.replay:
         run_replay(args.replay, args.relationships, watchlist, args.db_dir)
     elif args.live:
-        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host)
+        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host, args.debug)
     else:
         parser.print_help()
         sys.exit(1)
