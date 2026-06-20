@@ -49,17 +49,32 @@ def run_replay(path: str, relationships: str, watchlist, db_dir: str):
     print(f"[jobless-router] replay complete: {flagged}/{total} event(s) flagged as incidents.")
 
 
-def run_live(relationships: str, watchlist, db_dir: str):
+def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None):
     engine = JoblessRouterEngine(relationships_path=relationships, watchlist=watchlist, db_dir=db_dir)
+    state = {"count": 0, "incidents": 0}
 
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
+        if prefix_filter:
+            print(f"[jobless-router] filtering to prefix: {prefix_filter}")
+        else:
+            print(
+                "[jobless-router] no --prefix given -- subscribing to the FULL unfiltered global "
+                "firehose. This is genuinely high volume, and the tool deliberately stays silent on "
+                "ordinary, legitimate traffic, so it can look 'stuck' even while working correctly. "
+                "Watch for the heartbeat line below, or stop (Ctrl+C) and rerun with e.g. "
+                "--prefix 1.1.1.0/24 to see something concrete sooner."
+            )
         try:
-            async for event in live_stream():
+            async for event in live_stream(prefix_filter):
+                state["count"] += 1
                 incident = engine.process(event)
                 if incident:
+                    state["incidents"] += 1
                     print(engine.render_incident(incident))
                     print("\n" + "=" * 80 + "\n")
+                if state["count"] % 25 == 0:
+                    print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
         except Exception as exc:
             print(
                 f"[jobless-router] could not reach the RIS Live firehose ({exc.__class__.__name__}: {exc}).\n"
@@ -67,7 +82,10 @@ def run_live(relationships: str, watchlist, db_dir: str):
                 f"Try `python run.py --replay sample_events.jsonl` for an offline demo instead."
             )
 
-    asyncio.run(_go())
+    try:
+        asyncio.run(_go())
+    except KeyboardInterrupt:
+        print(f"\n[jobless-router] stopped. Processed {state['count']} update(s), flagged {state['incidents']} incident(s).")
 
 
 def main():
@@ -77,6 +95,7 @@ def main():
     )
     parser.add_argument("--replay", help="Path to a JSONL file of canned RIS-Live-style messages (no network needed).")
     parser.add_argument("--live", action="store_true", help="Connect to the real RIPE RIS Live firehose.")
+    parser.add_argument("--prefix", default=None, help="With --live, subscribe to only this prefix (e.g. 1.1.1.0/24) instead of the full global firehose.")
     parser.add_argument("--relationships", default="data/sample_as_relationships.txt", help="CAIDA-format AS relationship file.")
     parser.add_argument("--watchlist", default="data/watchlist.json", help="JSON list of critical prefixes to watch.")
     parser.add_argument("--db-dir", default=":memory:", help="Directory for sqlite threat/baseline DBs, or ':memory:' for an ephemeral run.")
@@ -88,7 +107,7 @@ def main():
     if args.replay:
         run_replay(args.replay, args.relationships, watchlist, args.db_dir)
     elif args.live:
-        run_live(args.relationships, watchlist, args.db_dir)
+        run_live(args.relationships, watchlist, args.db_dir, args.prefix)
     else:
         parser.print_help()
         sys.exit(1)
