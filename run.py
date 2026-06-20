@@ -83,6 +83,13 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
             heartbeat_every = 25
         try:
             async for event in live_stream(prefix_filter, host):
+                if prefix_filter and event.prefix != prefix_filter:
+                    # RIS Live's prefix filter matches at the UPDATE-message
+                    # level; a single message can legitimately carry several
+                    # prefixes (e.g. Cloudflare's 1.0.0.0/24 and 1.1.1.0/24
+                    # often ride the same path). Only count exact matches so
+                    # --prefix actually means what it says.
+                    continue
                 state["count"] += 1
                 # Run off the event loop: engine.process() makes a blocking
                 # network call (the RPKI check), and running that directly

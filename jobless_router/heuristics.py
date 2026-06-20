@@ -67,7 +67,13 @@ def targeted_mitm_score(
     return min(score, 100)
 
 
-def classify_intent(fat_finger: int, mitm: int, blackhole: bool = False) -> IntentScore:
+def classify_intent(fat_finger: int, mitm: int, blackhole: bool = False, rpki_valid: bool = False) -> IntentScore:
+    if rpki_valid:
+        # Cryptographic proof of legitimacy outranks every heuristic below.
+        # No combination of prefix-specificity/watchlist/relationship-graph
+        # signals should ever be allowed to override an actual valid ROA.
+        return IntentScore(fat_finger, mitm, "CONSISTENT_WITH_RPKI (origin cryptographically authorized)", 0)
+
     if blackhole:
         # A blackhole community is an operator deliberately asking the
         # network to drop this traffic -- almost always legitimate DDoS

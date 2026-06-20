@@ -52,9 +52,21 @@ class JoblessRouterEngine:
             rpki_verdict = rpki.validate_route(event.prefix, origin)
 
         blackhole = communities.has_blackhole_tag(event.communities)
-        interesting = rpki_verdict.state in (RPKIState.INVALID_ASN, RPKIState.INVALID_LENGTH) or novel
+        # RPKI VALID is a cryptographic attestation, not a heuristic -- it
+        # must take precedence over baseline novelty. A prefix legitimately
+        # gets announced through a never-before-seen upstream constantly
+        # (anycast, new transit relationships, etc.); that's not a leak if
+        # RPKI already confirms this exact origin is authorized for this
+        # exact prefix. Without this guard, a brand new (but 100% legitimate)
+        # upstream for an already-valid route gets treated as "novel" and
+        # then scored by heuristics that never check RPKI at all -- which is
+        # exactly how Cloudflare's own valid 1.1.1.0/24 announcement once
+        # got flagged as LIKELY_TARGETED_INTERCEPTION in testing.
+        interesting = rpki_verdict.state in (RPKIState.INVALID_ASN, RPKIState.INVALID_LENGTH) or (
+            novel and rpki_verdict.state != RPKIState.VALID
+        )
         if not interesting:
-            return None  # clean, baseline-consistent route -- correctly stays silent
+            return None  # clean, baseline-consistent (or RPKI-confirmed) route -- correctly stays silent
 
         anomaly = path_analysis.detect_path_anomaly(event.as_path)
         valley = valley_free_check(event.as_path, self.graph)
@@ -69,7 +81,7 @@ class JoblessRouterEngine:
             has_business_relationship=has_relationship,
             path_poisoned=(anomaly.kind == "POISONING"),
         )
-        intent = heuristics.classify_intent(ff_score, mitm_score, blackhole=blackhole)
+        intent = heuristics.classify_intent(ff_score, mitm_score, blackhole=blackhole, rpki_valid=(rpki_verdict.state == RPKIState.VALID))
 
         key = f"{event.prefix}|{origin}"
         self.blast.record(key, event.collector)
@@ -94,6 +106,6 @@ class JoblessRouterEngine:
     def render_incident(self, incident: Incident) -> str:
         playbook = ""
         label = incident.intent.label
-        if label != "AMBIGUOUS" and not label.startswith("LIKELY_LEGITIMATE") and incident.complicit_upstream:
+        if label not in ("AMBIGUOUS",) and not label.startswith(("LIKELY_LEGITIMATE", "CONSISTENT_WITH_RPKI")) and incident.complicit_upstream:
             playbook = mitigation.build_playbook(incident.event.prefix, incident.event.origin_asn)
         return report.render(incident, playbook)
