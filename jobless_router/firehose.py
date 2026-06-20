@@ -70,7 +70,7 @@ async def live_stream(prefix_filter: Optional[str] = None, host: Optional[str] =
     # attempt can hang on the unreachable IPv6 address before ever trying
     # IPv4 -- curl avoids this by racing both (Happy Eyeballs), but plain
     # asyncio connects do not unless told to skip IPv6 outright.
-    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30, family=socket.AF_INET) as ws:
+    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30, ping_timeout=30, family=socket.AF_INET) as ws:
         await ws.send(json.dumps(subscribe_msg))
         async for raw_msg in ws:
             msg = json.loads(raw_msg)

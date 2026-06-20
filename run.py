@@ -3,6 +3,8 @@ import asyncio
 import json
 import sys
 
+import websockets.exceptions
+
 from jobless_router.engine import JoblessRouterEngine
 from jobless_router.firehose import replay_file, live_stream
 from jobless_router.models import RPKIState
@@ -81,33 +83,59 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
                 "--host rrc00 to see something concrete sooner."
             )
             heartbeat_every = 25
-        try:
-            async for event in live_stream(prefix_filter, host):
-                if prefix_filter and event.prefix != prefix_filter:
-                    # RIS Live's prefix filter matches at the UPDATE-message
-                    # level; a single message can legitimately carry several
-                    # prefixes (e.g. Cloudflare's 1.0.0.0/24 and 1.1.1.0/24
-                    # often ride the same path). Only count exact matches so
-                    # --prefix actually means what it says.
-                    continue
-                state["count"] += 1
-                # Run off the event loop: engine.process() makes a blocking
-                # network call (the RPKI check), and running that directly
-                # inside this coroutine corrupts asyncio's cleanup if the
-                # user hits Ctrl+C mid-request.
-                incident = await asyncio.to_thread(engine.process, event)
-                if incident:
-                    state["incidents"] += 1
-                    print(engine.render_incident(incident))
-                    print("\n" + "=" * 80 + "\n")
-                if state["count"] % heartbeat_every == 0:
-                    print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
-        except Exception as exc:
-            print(
-                f"[jobless-router] could not reach the RIS Live firehose ({exc.__class__.__name__}: {exc}).\n"
-                f"This usually means outbound access to ris-live.ripe.net is blocked by your network/proxy.\n"
-                f"Try `python run.py --replay sample_events.jsonl` for an offline demo instead."
-            )
+        max_retries = 5
+        retry_delay = 2
+        attempt = 0
+
+        while True:
+            try:
+                async for event in live_stream(prefix_filter, host):
+                    if prefix_filter and event.prefix != prefix_filter:
+                        # RIS Live's prefix filter matches at the UPDATE-message
+                        # level; a single message can legitimately carry several
+                        # prefixes (e.g. Cloudflare's 1.0.0.0/24 and 1.1.1.0/24
+                        # often ride the same path). Only count exact matches so
+                        # --prefix actually means what it says.
+                        continue
+                    state["count"] += 1
+                    # Run off the event loop: engine.process() makes a blocking
+                    # network call (the RPKI check), and running that directly
+                    # inside this coroutine corrupts asyncio's cleanup if the
+                    # user hits Ctrl+C mid-request.
+                    incident = await asyncio.to_thread(engine.process, event)
+                    if incident:
+                        state["incidents"] += 1
+                        print(engine.render_incident(incident))
+                        print("\n" + "=" * 80 + "\n")
+                    if state["count"] % heartbeat_every == 0:
+                        print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
+                    attempt = 0  # a successful message resets the retry budget
+                return  # live_stream ending cleanly (shouldn't normally happen) -- stop
+            except websockets.exceptions.ConnectionClosed as exc:
+                attempt += 1
+                if attempt > max_retries:
+                    print(
+                        f"[jobless-router] connection kept dropping ({exc.__class__.__name__}) after "
+                        f"{max_retries} reconnect attempts -- giving up. Processed {state['count']} update(s), "
+                        f"flagged {state['incidents']} total before this. This is usually transient network "
+                        f"flakiness (NAT idle-connection timeouts are a common cause on VM networks) rather "
+                        f"than anything wrong with the tool. Try again, or use --replay for the offline demo."
+                    )
+                    return
+                print(
+                    f"[jobless-router] connection dropped ({exc.__class__.__name__}) -- reconnecting in "
+                    f"{retry_delay}s (attempt {attempt}/{max_retries}). {state['count']} update(s) processed, "
+                    f"{state['incidents']} flagged so far."
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30)
+            except Exception as exc:
+                print(
+                    f"[jobless-router] could not reach the RIS Live firehose ({exc.__class__.__name__}: {exc}).\n"
+                    f"This usually means outbound access to ris-live.ripe.net is blocked by your network/proxy.\n"
+                    f"Try `python run.py --replay sample_events.jsonl` for an offline demo instead."
+                )
+                return
 
     try:
         asyncio.run(_go())
