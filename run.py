@@ -57,6 +57,12 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None):
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
         if prefix_filter:
             print(f"[jobless-router] filtering to prefix: {prefix_filter}")
+            print(
+                "[jobless-router] waiting for the first real BGP update for this prefix -- BGP only "
+                "sends an update when something actually changes, not on a fixed schedule, so this can "
+                "take anywhere from a few seconds to several minutes even for a busy prefix. Quiet is normal."
+            )
+            heartbeat_every = 1
         else:
             print(
                 "[jobless-router] no --prefix given -- subscribing to the FULL unfiltered global "
@@ -65,15 +71,20 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None):
                 "Watch for the heartbeat line below, or stop (Ctrl+C) and rerun with e.g. "
                 "--prefix 1.1.1.0/24 to see something concrete sooner."
             )
+            heartbeat_every = 25
         try:
             async for event in live_stream(prefix_filter):
                 state["count"] += 1
-                incident = engine.process(event)
+                # Run off the event loop: engine.process() makes a blocking
+                # network call (the RPKI check), and running that directly
+                # inside this coroutine corrupts asyncio's cleanup if the
+                # user hits Ctrl+C mid-request.
+                incident = await asyncio.to_thread(engine.process, event)
                 if incident:
                     state["incidents"] += 1
                     print(engine.render_incident(incident))
                     print("\n" + "=" * 80 + "\n")
-                if state["count"] % 25 == 0:
+                if state["count"] % heartbeat_every == 0:
                     print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
         except Exception as exc:
             print(

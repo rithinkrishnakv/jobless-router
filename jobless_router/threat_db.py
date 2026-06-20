@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS offenders (
 
 class ThreatDB:
     def __init__(self, path: str = "jobless_router_threat.db"):
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute(SCHEMA)
         self.conn.commit()
 
