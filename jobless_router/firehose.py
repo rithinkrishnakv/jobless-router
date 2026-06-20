@@ -11,6 +11,7 @@ Two ways to feed the engine:
 """
 import asyncio
 import json
+import socket
 import time
 from typing import AsyncIterator, Iterator, Optional, List
 
@@ -48,7 +49,13 @@ async def live_stream(prefix_filter: Optional[str] = None) -> AsyncIterator[Anno
     if prefix_filter:
         subscribe_msg["data"]["prefix"] = prefix_filter
 
-    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30) as ws:
+    # family=AF_INET: many VM/NAT setups (VirtualBox/VMware NAT in particular)
+    # hand out a working IPv4 path but cannot actually route IPv6, even
+    # though DNS still returns an IPv6 address. Without this, the connect
+    # attempt can hang on the unreachable IPv6 address before ever trying
+    # IPv4 -- curl avoids this by racing both (Happy Eyeballs), but plain
+    # asyncio connects do not unless told to skip IPv6 outright.
+    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30, family=socket.AF_INET) as ws:
         await ws.send(json.dumps(subscribe_msg))
         async for raw_msg in ws:
             msg = json.loads(raw_msg)
