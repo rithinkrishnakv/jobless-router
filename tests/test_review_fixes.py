@@ -77,6 +77,17 @@ def test_valley_check_bridging_does_not_false_positive():
     assert result.is_valley_free is True, result.detail
 
 
+def test_real_feed_int_communities_dont_crash():
+    # RIPE's real RIS Live feed sends community values as JSON integers,
+    # e.g. [[65535, 666]], not strings like the bundled sample data uses.
+    # This crashed with a TypeError the first time this code ever touched
+    # real live traffic.
+    from jobless_router.firehose import _format_community
+    assert _format_community([65535, 666]) == "65535:666"
+    assert _format_community(["65535", "666"]) == "65535:666"
+    assert _format_community(65535) == "65535"
+
+
 def main():
     tests = [
         test_prepend_does_not_hide_real_upstream,
@@ -84,6 +95,7 @@ def main():
         test_real_poisoning_is_still_caught,
         test_valley_check_bridges_unmapped_ixp_hop,
         test_valley_check_bridging_does_not_false_positive,
+        test_real_feed_int_communities_dont_crash,
     ]
     for t in tests:
         t()

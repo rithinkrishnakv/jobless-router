@@ -24,6 +24,19 @@ except ImportError:
     websockets = None
 
 
+def _format_community(c) -> str:
+    """
+    Normalize one BGP community entry into 'asn:value' string form.
+    The bundled sample_events.jsonl uses strings (["65535", "666"]), but
+    RIPE's real RIS Live feed sends actual JSON integers ([65535, 666]) --
+    str()-ing every element here handles either shape instead of assuming
+    one.
+    """
+    if isinstance(c, (list, tuple)):
+        return ":".join(str(x) for x in c)
+    return str(c)
+
+
 def _event_from_data(data: dict, raw: dict) -> Iterator[AnnouncementEvent]:
     announcements = data.get("announcements", [])
     if not announcements and data.get("prefix"):
@@ -36,7 +49,7 @@ def _event_from_data(data: dict, raw: dict) -> Iterator[AnnouncementEvent]:
                 peer_asn=str(data.get("peer_asn", "")),
                 prefix=prefix,
                 as_path=[int(a) for a in data.get("path", []) if str(a).lstrip("-").isdigit()],
-                communities=[":".join(c) if isinstance(c, list) else c for c in data.get("community", [])],
+                communities=[_format_community(c) for c in data.get("community", [])],
                 raw=raw,
             )
 
