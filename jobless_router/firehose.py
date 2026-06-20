@@ -48,7 +48,7 @@ async def live_stream(prefix_filter: Optional[str] = None) -> AsyncIterator[Anno
     if prefix_filter:
         subscribe_msg["data"]["prefix"] = prefix_filter
 
-    async with websockets.connect(config.RIS_LIVE_WS_URL) as ws:
+    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30) as ws:
         await ws.send(json.dumps(subscribe_msg))
         async for raw_msg in ws:
             msg = json.loads(raw_msg)
