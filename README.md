@@ -1,14 +1,25 @@
-# Jobless-Router
-### *Reincarnated in a Tier-1 Scrubbing Center to Master BGP Flowspec*
+<div align="center">
+
+<img src="assets/banner.svg" alt="Jobless-Router — BGP zero-trust threat-intel engine" width="100%">
+
+<br>
 
 [![tests](https://github.com/rithinkrishnakv/jobless-router/actions/workflows/tests.yml/badge.svg)](https://github.com/rithinkrishnakv/jobless-router/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2bdca0?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-22d3ee?style=flat-square)](https://www.python.org/)
+[![Source](https://img.shields.io/badge/source-RIPE%20RIS%20Live-2bdca0?style=flat-square)](https://ris-live.ripe.net/)
+[![Mitigation](https://img.shields.io/badge/mitigation-advisory%20only-ff9f5a?style=flat-square)](#advisory-mitigation-playbook)
+[![Type](https://img.shields.io/badge/type-BGP%20intel-1c2b27?style=flat-square)](#what-it-actually-does)
+
+</div>
 
 A real-time BGP zero-trust threat-intelligence engine. It listens to the global
 routing firehose, cryptographically validates announcements against live RPKI,
-and scores *intent* — accidental misconfiguration vs. deliberate route leak vs.
-targeted interception attempt — instead of just flagging "RPKI invalid" and
-stopping there.
+and **scores intent** — accidental misconfiguration vs. deliberate route leak
+vs. targeted interception attempt — instead of just flagging "RPKI invalid"
+and stopping there.
+
+---
 
 ## What it actually does
 
@@ -51,13 +62,15 @@ stopping there.
 10. **Operational robustness** — runs the websocket receiver and the
     scoring pipeline as separate producer/consumer tasks joined by a
     queue, so slow processing (RPKI lookups, etc.) can never delay
-    draining the socket -- a likely contributor to the ping-timeout
+    draining the socket — a likely contributor to the ping-timeout
     disconnects seen in early testing. Auto-reconnects with backoff
     through transient drops instead of dying, optionally through a SOCKS5
     proxy (`--proxy socks5://host:port`); caches RPKI lookups for a few
     minutes so repeated sightings of the same route don't hammer
     RIPEstat; `--debug` shows every event's score, flagged or not, so
     silence is verifiable rather than just trusted.
+
+---
 
 ## Quick start
 
@@ -88,6 +101,8 @@ python run.py --live --prefix 1.0.0.0/8 --more-specific
 python run.py --live --host rrc00 --proxy socks5://127.0.0.1:1080 --ping-timeout 30
 ```
 
+---
+
 ## The bundled demo (`sample_events.jsonl`)
 
 Six canned, RIS-Live-shaped events that exercise every subsystem end to end
@@ -108,6 +123,8 @@ example, Cloudflare's public `1.1.1.0/24` resolver — used purely to show the
 watchlist mechanism working, not as a claim about any real event. All "rogue"
 and "customer" ASNs are in the IANA private-use range (64512–65534).
 
+---
+
 ## Swapping in real data for production use
 
 - **AS relationships**: `data/sample_as_relationships.txt` is a tiny,
@@ -121,6 +138,8 @@ and "customer" ASNs are in the IANA private-use range (64512–65534).
   `rpki-validation` API — no key needed, just normal internet access.
 - **Persistence**: pass `--db-dir /some/real/path` instead of the default
   `:memory:` so the baseline and repeat-offender databases survive restarts.
+
+---
 
 ## Architecture
 
@@ -149,16 +168,18 @@ pipeline can never delay draining the websocket itself. Either task
 crashing surfaces immediately (`asyncio.wait(..., FIRST_EXCEPTION)`)
 instead of dying silently while the other keeps running.
 
+---
+
 ## A note on scope and honesty
 
-This has been tested end-to-end against synthetic data *and* run live
-against the real RIPE RIS Live firehose, where it correctly stayed silent
-on ordinary legitimate traffic (including its own past false positives,
-once found and fixed -- see CHANGELOG.md) and caught real, unscripted
-baseline-deviation events on its own. It's still a single-operator tool,
-not a substitute for MANRS-style coordinated filtering, and its sample
-relationship graph and collector-region map are small/illustrative rather
-than authoritative. Treat its output as a strong lead for a human analyst,
-not an automated verdict -- a 40/100 confidence score means exactly that,
-not "confirmed hijack" -- and keep mitigation actions behind a human
-approval gate.
+> This has been tested end-to-end against synthetic data *and* run live
+> against the real RIPE RIS Live firehose, where it correctly stayed silent
+> on ordinary legitimate traffic (including its own past false positives,
+> once found and fixed — see CHANGELOG.md) and caught real, unscripted
+> baseline-deviation events on its own. It's still a single-operator tool,
+> not a substitute for MANRS-style coordinated filtering, and its sample
+> relationship graph and collector-region map are small/illustrative rather
+> than authoritative. Treat its output as a strong lead for a human analyst,
+> **not an automated verdict** — a 40/100 confidence score means exactly
+> that, not "confirmed hijack" — and keep mitigation actions behind a
+> human approval gate.
