@@ -98,11 +98,55 @@ def test_live_reconnect_survives_repeated_drops():
     assert result == ["msg", "msg", "final-msg"], result
 
 
+def test_producer_consumer_crash_surfaces_instead_of_hanging():
+    # run.py's --live mode runs a producer (receives off the websocket)
+    # and a consumer (does the actual scoring) as separate asyncio tasks
+    # joined by a queue, so slow processing can't delay draining the
+    # socket (a likely contributor to the ping-timeout disconnects seen
+    # against real rrc00 traffic). The risk: the producer retries forever
+    # and never finishes on its own, so if only the producer is awaited,
+    # a crash in the consumer would die silently -- the program would look
+    # alive (still connected) while having actually stopped processing
+    # anything. This proves asyncio.wait(..., FIRST_EXCEPTION) surfaces a
+    # consumer crash immediately instead of hanging.
+    import asyncio
+
+    async def fake_producer_runs_forever():
+        while True:
+            await asyncio.sleep(0.01)
+
+    async def fake_consumer_crashes():
+        await asyncio.sleep(0.02)
+        raise ValueError("simulated parse error")
+
+    async def main():
+        producer_task = asyncio.create_task(fake_producer_runs_forever())
+        consumer_task = asyncio.create_task(fake_consumer_crashes())
+        try:
+            done, _ = await asyncio.wait(
+                [producer_task, consumer_task], return_when=asyncio.FIRST_EXCEPTION
+            )
+            for t in done:
+                if t.exception() is not None:
+                    raise t.exception()
+        finally:
+            producer_task.cancel()
+
+    raised = False
+    try:
+        asyncio.run(main())
+    except ValueError as e:
+        raised = True
+        assert "simulated parse error" in str(e)
+    assert raised, "consumer crash should have surfaced, not hung silently"
+
+
 def main():
     tests = [
         test_rpki_valid_suppresses_anycast_false_positive,
         test_rpki_valid_overrides_heuristics_if_reached_directly,
         test_live_reconnect_survives_repeated_drops,
+        test_producer_consumer_crash_surfaces_instead_of_hanging,
     ]
     for t in tests:
         t()

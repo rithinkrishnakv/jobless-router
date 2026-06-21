@@ -48,12 +48,16 @@ stopping there.
    review. It deliberately never opens a live BGP session or pushes config
    automatically — false positives in *automated* mitigation can black-hole
    legitimate traffic faster than the hijack would have.
-10. **Operational robustness** — auto-reconnects with backoff through
-    transient websocket drops (NAT idle timeouts are common on long-lived
-    connections) instead of dying; caches RPKI lookups for a few minutes so
-    repeated sightings of the same route don't hammer RIPEstat; `--debug`
-    shows every event's score, flagged or not, so silence is verifiable
-    rather than just trusted.
+10. **Operational robustness** — runs the websocket receiver and the
+    scoring pipeline as separate producer/consumer tasks joined by a
+    queue, so slow processing (RPKI lookups, etc.) can never delay
+    draining the socket -- a likely contributor to the ping-timeout
+    disconnects seen in early testing. Auto-reconnects with backoff
+    through transient drops instead of dying, optionally through a SOCKS5
+    proxy (`--proxy socks5://host:port`); caches RPKI lookups for a few
+    minutes so repeated sightings of the same route don't hammer
+    RIPEstat; `--debug` shows every event's score, flagged or not, so
+    silence is verifiable rather than just trusted.
 
 ## Quick start
 
@@ -79,6 +83,9 @@ python run.py --live --host rrc00 --debug
 
 # Catch a sub-prefix carved out of a watched block (the real hijack pattern):
 python run.py --live --prefix 1.0.0.0/8 --more-specific
+
+# Through a SOCKS5 proxy, with looser keepalive tolerance for a flaky network:
+python run.py --live --host rrc00 --proxy socks5://127.0.0.1:1080 --ping-timeout 30
 ```
 
 ## The bundled demo (`sample_events.jsonl`)
@@ -118,18 +125,29 @@ and "customer" ASNs are in the IANA private-use range (64512–65534).
 ## Architecture
 
 ```
-firehose.py  --> engine.py --(orchestrates)--> rpki.py
-                              |--> path_analysis.py (traversal + poisoning)
-                              |--> relationships.py (valley-free / Gao-Rexford)
-                              |--> communities.py   (RFC1997/7999 decoding)
-                              |--> baseline.py       (sqlite, learns "normal")
-                              |--> blast_radius.py   (multi-collector sampling)
-                              |--> heuristics.py     (intent scoring)
-                              |--> threat_db.py      (sqlite, repeat offenders)
-                              |--> ct_correlation.py (crt.sh cross-check)
-                              |--> mitigation.py     (advisory playbook text)
-                              `--> report.py          (markdown rendering)
+firehose.py (producer: receives off the websocket, pushes to a queue)
+       |
+       v
+   asyncio.Queue
+       |
+       v
+run.py (consumer) --> engine.py --(orchestrates)--> rpki.py (cached)
+                                   |--> path_analysis.py (traversal + poisoning)
+                                   |--> relationships.py (valley-free / Gao-Rexford)
+                                   |--> communities.py   (RFC1997/7999 decoding)
+                                   |--> baseline.py       (sqlite, learns "normal")
+                                   |--> blast_radius.py   (multi-collector sampling, bounded)
+                                   |--> heuristics.py     (intent scoring)
+                                   |--> threat_db.py      (sqlite, repeat offenders)
+                                   |--> ct_correlation.py (crt.sh cross-check)
+                                   |--> mitigation.py     (advisory playbook text)
+                                   `--> report.py          (markdown rendering)
 ```
+
+The producer and consumer run as separate asyncio tasks so a slow scoring
+pipeline can never delay draining the websocket itself. Either task
+crashing surfaces immediately (`asyncio.wait(..., FIRST_EXCEPTION)`)
+instead of dying silently while the other keeps running.
 
 ## A note on scope and honesty
 

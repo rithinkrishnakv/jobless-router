@@ -6,7 +6,7 @@ import sys
 import websockets.exceptions
 
 from jobless_router.engine import JoblessRouterEngine
-from jobless_router.firehose import replay_file, live_stream
+from jobless_router.firehose import replay_file, run_producer, _event_from_data
 from jobless_router.models import RPKIState
 from jobless_router.banner import render_banner
 
@@ -47,7 +47,7 @@ def run_replay(path: str, relationships: str, watchlist, db_dir: str):
     print(f"[jobless-router] replay complete: {flagged}/{total} event(s) flagged as incidents.")
 
 
-def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None, debug=False, more_specific=False):
+def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None, debug=False, more_specific=False, proxy=None, ping_interval=10.0, ping_timeout=5.0):
     engine = JoblessRouterEngine(relationships_path=relationships, watchlist=watchlist, db_dir=db_dir)
     state = {"count": 0, "incidents": 0}
 
@@ -63,6 +63,35 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
             print(f"         RPKI note: {rpki_verdict.note}")
         if novel:
             print(f"         baseline note: {novel_note}")
+
+    async def _consumer(queue: asyncio.Queue, heartbeat_every: int):
+        while True:
+            raw_msg = await queue.get()
+            if raw_msg is None:
+                queue.task_done()
+                break
+            try:
+                msg = json.loads(raw_msg)
+                data = msg.get("data", {})
+                for event in _event_from_data(data, msg):
+                    if prefix_filter and not more_specific and event.prefix != prefix_filter:
+                        continue
+                    state["count"] += 1
+                    incident = await asyncio.to_thread(
+                        engine.process, event, None, debug_print if debug else None
+                    )
+                    if incident:
+                        state["incidents"] += 1
+                        print(engine.render_incident(incident))
+                        print("\n" + "=" * 80 + "\n")
+                    if state["count"] % heartbeat_every == 0:
+                        print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
+            except Exception as e:
+                print(f"[consumer] Parse or process error: {e}")
+                # Crash if there is a parsing logic issue, do not swallow it silently
+                raise
+            finally:
+                queue.task_done()
 
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
@@ -96,66 +125,59 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
                 "--host rrc00 to see something concrete sooner."
             )
             heartbeat_every = 25
-        max_retries = 5
-        retry_delay = 2
-        attempt = 0
 
-        while True:
+        queue = asyncio.Queue(maxsize=10000)
+        consumer_task = asyncio.create_task(_consumer(queue, heartbeat_every))
+        producer_task = asyncio.create_task(run_producer(
+            queue, prefix_filter, host, more_specific, proxy, ping_interval, ping_timeout
+        ))
+
+        try:
+            # Wait on whichever finishes first. Under normal operation
+            # neither task ever finishes on its own (the producer retries
+            # forever, the consumer loops until it gets the shutdown
+            # sentinel) -- this exists purely so an unhandled exception in
+            # EITHER task surfaces immediately and loudly. Without this,
+            # a crash in the consumer (a genuine parsing bug, say) would
+            # leave it silently dead while the producer kept running with
+            # nothing left consuming the queue -- the program would look
+            # alive (still connected) while having actually stopped
+            # processing anything, with the real error invisible until
+            # something else (like Ctrl+C) finally touched consumer_task.
+            done, _ = await asyncio.wait(
+                [producer_task, consumer_task], return_when=asyncio.FIRST_EXCEPTION
+            )
+            for t in done:
+                if t.exception() is not None:
+                    raise t.exception()
+        except asyncio.CancelledError:
+            print(f"\n[jobless-router] graceful shutdown initiated. Waiting for remaining {queue.qsize()} items in queue...")
+        finally:
+            producer_task.cancel()
+
+            async def cleanup():
+                # Let the consumer drain whatever's already queued rather
+                # than cutting it off mid-item -- but if it already died
+                # (e.g. via the exception path above), there's nothing
+                # alive to drain into, and putting/awaiting on it would
+                # just hang forever.
+                if not consumer_task.done():
+                    await queue.put(None)
+                    try:
+                        await consumer_task
+                    except asyncio.CancelledError:
+                        pass
+
             try:
-                async for event in live_stream(prefix_filter, host, more_specific):
-                    if prefix_filter and not more_specific and event.prefix != prefix_filter:
-                        # RIS Live's prefix filter matches at the UPDATE-message
-                        # level; a single message can legitimately carry several
-                        # prefixes (e.g. Cloudflare's 1.0.0.0/24 and 1.1.1.0/24
-                        # often ride the same path). Only count exact matches so
-                        # --prefix actually means what it says.
-                        continue
-                    state["count"] += 1
-                    # Run off the event loop: engine.process() makes a blocking
-                    # network call (the RPKI check), and running that directly
-                    # inside this coroutine corrupts asyncio's cleanup if the
-                    # user hits Ctrl+C mid-request.
-                    incident = await asyncio.to_thread(
-                        engine.process, event, None, debug_print if debug else None
-                    )
-                    if incident:
-                        state["incidents"] += 1
-                        print(engine.render_incident(incident))
-                        print("\n" + "=" * 80 + "\n")
-                    if state["count"] % heartbeat_every == 0:
-                        print(f"[jobless-router] ...alive -- processed {state['count']} updates, {state['incidents']} flagged so far.")
-                    attempt = 0  # a successful message resets the retry budget
-                return  # live_stream ending cleanly (shouldn't normally happen) -- stop
-            except websockets.exceptions.ConnectionClosed as exc:
-                attempt += 1
-                if attempt > max_retries:
-                    print(
-                        f"[jobless-router] connection kept dropping ({exc.__class__.__name__}) after "
-                        f"{max_retries} reconnect attempts -- giving up. Processed {state['count']} update(s), "
-                        f"flagged {state['incidents']} total before this. This is usually transient network "
-                        f"flakiness (NAT idle-connection timeouts are a common cause on VM networks) rather "
-                        f"than anything wrong with the tool. Try again, or use --replay for the offline demo."
-                    )
-                    return
-                print(
-                    f"[jobless-router] connection dropped ({exc.__class__.__name__}) -- reconnecting in "
-                    f"{retry_delay}s (attempt {attempt}/{max_retries}). {state['count']} update(s) processed, "
-                    f"{state['incidents']} flagged so far."
-                )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 30)
-            except Exception as exc:
-                print(
-                    f"[jobless-router] could not reach the RIS Live firehose ({exc.__class__.__name__}: {exc}).\n"
-                    f"This usually means outbound access to ris-live.ripe.net is blocked by your network/proxy.\n"
-                    f"Try `python run.py --replay sample_events.jsonl` for an offline demo instead."
-                )
-                return
+                await asyncio.shield(cleanup())
+            except asyncio.CancelledError:
+                pass
 
     try:
         asyncio.run(_go())
     except KeyboardInterrupt:
-        print(f"\n[jobless-router] stopped. Processed {state['count']} update(s), flagged {state['incidents']} incident(s).")
+        pass
+    print(f"\n[jobless-router] stopped. Processed {state['count']} update(s), flagged {state['incidents']} incident(s).")
 
 
 def main():
@@ -165,6 +187,9 @@ def main():
     )
     parser.add_argument("--replay", help="Path to a JSONL file of canned RIS-Live-style messages (no network needed).")
     parser.add_argument("--live", action="store_true", help="Connect to the real RIPE RIS Live firehose.")
+    parser.add_argument("--proxy", default=None, help="SOCKS5 proxy URL (e.g. socks5://127.0.0.1:1080) for the live connection.")
+    parser.add_argument("--ping-interval", type=float, default=10.0, help="WebSocket keepalive ping interval in seconds.")
+    parser.add_argument("--ping-timeout", type=float, default=5.0, help="WebSocket keepalive ping timeout in seconds.")
     parser.add_argument("--prefix", default=None, help="With --live, subscribe to only this prefix (e.g. 1.1.1.0/24) instead of the full global firehose.")
     parser.add_argument("--host", default=None, help="With --live, subscribe to only this RIS collector (e.g. rrc00) -- all prefixes it sees, real continuous traffic.")
     parser.add_argument("--debug", action="store_true", help="With --live, print RPKI/score/verdict for every event, including ones that don't get flagged -- use this to verify the engine is actually evaluating traffic, not just to trust the silence.")
@@ -180,7 +205,7 @@ def main():
     if args.replay:
         run_replay(args.replay, args.relationships, watchlist, args.db_dir)
     elif args.live:
-        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host, args.debug, args.more_specific)
+        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host, args.debug, args.more_specific, args.proxy, args.ping_interval, args.ping_timeout)
     else:
         parser.print_help()
         sys.exit(1)

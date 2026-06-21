@@ -17,9 +17,18 @@ from . import config
 class BlastRadiusTracker:
     def __init__(self):
         self._sightings: Dict[str, set] = {}
+        self.max_size = 50000
 
     def record(self, key: str, collector: str):
-        self._sightings.setdefault(key, set()).add(collector)
+        if key in self._sightings:
+            s = self._sightings.pop(key)
+        else:
+            s = set()
+            if len(self._sightings) >= self.max_size:
+                oldest_key = next(iter(self._sightings))
+                del self._sightings[oldest_key]
+        s.add(collector)
+        self._sightings[key] = s
 
     def estimate(self, key: str) -> BlastRadius:
         seen = self._sightings.get(key, set())

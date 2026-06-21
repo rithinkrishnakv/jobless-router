@@ -1,9 +1,12 @@
 """
 Two ways to feed the engine:
 
-1. live_stream() -- connects to RIPE RIS Live's public websocket firehose
-   (wss://ris-live.ripe.net), no API key required. Needs normal outbound
+1. run_producer() -- connects to RIPE RIS Live's public websocket firehose
+   (wss://ris-live.ripe.net), no API key required, and pushes raw messages
+   onto a queue (consumed separately in run.py). Needs normal outbound
    internet access; will not work from a network-restricted sandbox.
+   Auto-reconnects with backoff on dropped connections, and optionally
+   routes through a SOCKS5 proxy.
 
 2. replay_file() -- reads canned, RIS-Live-shaped JSONL messages from disk.
    Zero network dependency, fully deterministic -- this is what the bundled
@@ -54,7 +57,21 @@ def _event_from_data(data: dict, raw: dict) -> Iterator[AnnouncementEvent]:
             )
 
 
-async def live_stream(prefix_filter: Optional[str] = None, host: Optional[str] = None, more_specific: bool = False) -> AsyncIterator[AnnouncementEvent]:
+try:
+    from python_socks.async_.asyncio import Proxy
+except ImportError:
+    Proxy = None
+
+
+async def run_producer(
+    queue: asyncio.Queue,
+    prefix_filter: Optional[str] = None,
+    host: Optional[str] = None,
+    more_specific: bool = False,
+    proxy_url: Optional[str] = None,
+    ping_interval: float = 10.0,
+    ping_timeout: float = 5.0,
+):
     if websockets is None:
         raise RuntimeError("Install the 'websockets' package to use --live mode (pip install websockets).")
 
@@ -66,19 +83,54 @@ async def live_stream(prefix_filter: Optional[str] = None, host: Optional[str] =
     if host:
         subscribe_msg["data"]["host"] = host
 
-    # family=AF_INET: many VM/NAT setups (VirtualBox/VMware NAT in particular)
-    # hand out a working IPv4 path but cannot actually route IPv6, even
-    # though DNS still returns an IPv6 address. Without this, the connect
-    # attempt can hang on the unreachable IPv6 address before ever trying
-    # IPv4 -- curl avoids this by racing both (Happy Eyeballs), but plain
-    # asyncio connects do not unless told to skip IPv6 outright.
-    async with websockets.connect(config.RIS_LIVE_WS_URL, open_timeout=30, ping_timeout=30, family=socket.AF_INET) as ws:
-        await ws.send(json.dumps(subscribe_msg))
-        async for raw_msg in ws:
-            msg = json.loads(raw_msg)
-            data = msg.get("data", {})
-            for event in _event_from_data(data, msg):
-                yield event
+    retry_delay = 2.0
+    max_retry_delay = 30.0
+
+    from urllib.parse import urlparse
+    parsed_url = urlparse(config.RIS_LIVE_WS_URL)
+    dest_host = parsed_url.hostname
+    dest_port = parsed_url.port or (443 if parsed_url.scheme == 'wss' else 80)
+
+    while True:
+        sock = None
+        try:
+            if proxy_url:
+                if Proxy is None:
+                    print("[warning] python-socks not installed, ignoring proxy.")
+                else:
+                    proxy = Proxy.from_url(proxy_url)
+                    sock = await proxy.connect(dest_host, dest_port)
+
+            async with websockets.connect(
+                config.RIS_LIVE_WS_URL,
+                sock=sock,
+                server_hostname=dest_host if sock else None,
+                open_timeout=30,
+                ping_interval=ping_interval,
+                ping_timeout=ping_timeout,
+                family=socket.AF_INET if not sock else 0
+            ) as ws:
+                await ws.send(json.dumps(subscribe_msg))
+                retry_delay = 2.0  # reset on successful connect
+
+                async for raw_msg in ws:
+                    await queue.put(raw_msg)
+                    
+        except (
+            websockets.exceptions.ConnectionClosed,
+            asyncio.TimeoutError,
+            ConnectionRefusedError,
+            socket.error
+        ) as exc:
+            if sock:
+                sock.close()
+            print(f"[producer] Connection dropped ({exc.__class__.__name__}). Reconnecting in {retry_delay}s...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+        except asyncio.CancelledError:
+            if sock:
+                sock.close()
+            raise
 
 
 def replay_file(path: str) -> Iterator[AnnouncementEvent]:

@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.3.0 -- producer/consumer architecture
+
+- **Decoupled receiving from processing.** The previous `--live` loop
+  awaited the full scoring pipeline (including the RPKI HTTP call) before
+  ever asking the websocket for the next message -- meaning slow
+  processing directly delayed draining the socket, which is a plausible
+  contributor to the ping-timeout disconnects seen repeatedly in earlier
+  live testing. Now a dedicated producer task only receives and queues
+  raw messages; a separate consumer task does the actual scoring. Bounded
+  queue (10,000 items) for backpressure.
+- **Added SOCKS5 proxy support** (`--proxy socks5://host:port`) via
+  `python-socks`, for networks where a direct connection to
+  ris-live.ripe.net isn't viable.
+- **Made `--ping-interval`/`--ping-timeout` configurable** instead of
+  hardcoded, in case a given network needs more or less tolerance than
+  the defaults.
+- **Fixed a real visibility gap**: the producer retries forever and never
+  finishes on its own, so if only the producer were awaited (as an
+  earlier draft of this change did), a crash in the consumer would die
+  completely silently -- the program would look alive (still connected,
+  still printing nothing wrong) while having actually stopped processing
+  anything. Now both tasks are waited on together
+  (`asyncio.wait(..., return_when=FIRST_EXCEPTION)`), so either crashing
+  surfaces immediately, while a normal shutdown still lets the consumer
+  drain whatever's already queued rather than cutting it off mid-item.
+- Added an LRU-ish bound (50,000 entries) to `BlastRadiusTracker` so a
+  long-running session can't grow its sightings dict unboundedly.
+
 ## v0.2.0 -- validated against real live traffic
 
 Everything in this release was found by actually running `--live` against
