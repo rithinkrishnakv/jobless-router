@@ -31,7 +31,14 @@ def validate_route(prefix: str, origin_asn: int, timeout: float = 4.0) -> RPKIVe
             return RPKIVerdict(RPKIState.INVALID_ASN, roas, "A covering ROA exists, but for a different origin ASN.")
         if status == "invalid_length":
             return RPKIVerdict(RPKIState.INVALID_LENGTH, roas, "Announced prefix is more specific than the ROA's max length allows.")
-        if status == "not_found":
+        if status in ("not_found", "unknown"):
+            # Confirmed against real traffic: RIPEstat's rpki-validation call
+            # actually returns 'unknown' (not 'not_found') for "no covering
+            # ROA exists" -- the prior mapping meant every real no-ROA route
+            # fell through to the generic UNKNOWN branch below with a
+            # confusing "Unrecognized validator status" note, even though
+            # this is RPKI's completely normal, expected answer for roughly
+            # half the routed table.
             return RPKIVerdict(RPKIState.NOT_FOUND, roas, "No covering ROA exists; RPKI has no opinion on this route.")
         return RPKIVerdict(RPKIState.UNKNOWN, roas, f"Unrecognized validator status: {status!r}")
 

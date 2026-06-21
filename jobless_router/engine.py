@@ -81,9 +81,9 @@ class JoblessRouterEngine:
         self.baseline.observe(event.prefix, origin, upstream or 0)
 
         if forced_rpki is not None:
-            rpki_verdict = rpki.mock_validate_route(event.prefix, origin, forced_rpki, novel_note)
+            rpki_verdict = rpki.mock_validate_route(event.prefix, origin, forced_rpki)
         elif self.offline:
-            rpki_verdict = rpki.mock_validate_route(event.prefix, origin, RPKIState.UNKNOWN, novel_note)
+            rpki_verdict = rpki.mock_validate_route(event.prefix, origin, RPKIState.UNKNOWN)
         else:
             rpki_verdict = self._cached_rpki_validate(event.prefix, origin)
 
@@ -149,6 +149,8 @@ class JoblessRouterEngine:
             intent=intent,
             blast=blast,
             community_tags=tags,
+            novel=novel,
+            novel_note=novel_note,
         )
 
     def render_incident(self, incident: Incident) -> str:

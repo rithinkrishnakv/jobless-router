@@ -13,6 +13,7 @@ def render(incident: Incident, mitigation_text: str = "") -> str:
     lines.append(f"**Origin AS:** AS{ev.origin_asn}  ")
     lines.append(f"**Observed via collector:** {ev.collector}  ")
     lines.append(f"**RPKI verdict:** `{incident.rpki.state.value}` -- {incident.rpki.note}")
+    lines.append(f"**Baseline check:** {'NOVEL' if incident.novel else 'consistent'} -- {incident.novel_note}")
     lines.append("")
     lines.append("## AS-Path Traversal")
     lines.append(f"`{' -> '.join(str(a) for a in ev.as_path)}`")

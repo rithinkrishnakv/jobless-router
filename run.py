@@ -61,6 +61,8 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
         )
         if rpki_verdict.state.value == "UNKNOWN":
             print(f"         RPKI note: {rpki_verdict.note}")
+        if novel:
+            print(f"         baseline note: {novel_note}")
 
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")

@@ -74,5 +74,7 @@ class Incident:
     intent: IntentScore
     blast: BlastRadius
     community_tags: List[str]
+    novel: bool = False
+    novel_note: str = ""
     ct_flags: List[str] = field(default_factory=list)
     opened_at: float = field(default_factory=time.time)
