@@ -47,7 +47,7 @@ def run_replay(path: str, relationships: str, watchlist, db_dir: str):
     print(f"[jobless-router] replay complete: {flagged}/{total} event(s) flagged as incidents.")
 
 
-def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None, debug=False):
+def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, host=None, debug=False, more_specific=False):
     engine = JoblessRouterEngine(relationships_path=relationships, watchlist=watchlist, db_dir=db_dir)
     state = {"count": 0, "incidents": 0}
 
@@ -65,7 +65,11 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
         if prefix_filter:
-            print(f"[jobless-router] filtering to prefix: {prefix_filter}" + (f", collector: {host}" if host else ""))
+            print(
+                f"[jobless-router] filtering to prefix: {prefix_filter}"
+                + (" (+ all more-specific sub-prefixes)" if more_specific else "")
+                + (f", collector: {host}" if host else "")
+            )
             print(
                 "[jobless-router] waiting for the first real BGP update for this prefix -- BGP only "
                 "sends an update when something actually changes, not on a fixed schedule, so this can "
@@ -96,8 +100,8 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
 
         while True:
             try:
-                async for event in live_stream(prefix_filter, host):
-                    if prefix_filter and event.prefix != prefix_filter:
+                async for event in live_stream(prefix_filter, host, more_specific):
+                    if prefix_filter and not more_specific and event.prefix != prefix_filter:
                         # RIS Live's prefix filter matches at the UPDATE-message
                         # level; a single message can legitimately carry several
                         # prefixes (e.g. Cloudflare's 1.0.0.0/24 and 1.1.1.0/24
@@ -162,6 +166,7 @@ def main():
     parser.add_argument("--prefix", default=None, help="With --live, subscribe to only this prefix (e.g. 1.1.1.0/24) instead of the full global firehose.")
     parser.add_argument("--host", default=None, help="With --live, subscribe to only this RIS collector (e.g. rrc00) -- all prefixes it sees, real continuous traffic.")
     parser.add_argument("--debug", action="store_true", help="With --live, print RPKI/score/verdict for every event, including ones that don't get flagged -- use this to verify the engine is actually evaluating traffic, not just to trust the silence.")
+    parser.add_argument("--more-specific", action="store_true", help="With --live --prefix, also match every more-specific sub-prefix within that block (e.g. catches a /24 hijacked out of a watched /16) instead of only the exact prefix.")
     parser.add_argument("--relationships", default="data/sample_as_relationships.txt", help="CAIDA-format AS relationship file.")
     parser.add_argument("--watchlist", default="data/watchlist.json", help="JSON list of critical prefixes to watch.")
     parser.add_argument("--db-dir", default=":memory:", help="Directory for sqlite threat/baseline DBs, or ':memory:' for an ephemeral run.")
@@ -173,7 +178,7 @@ def main():
     if args.replay:
         run_replay(args.replay, args.relationships, watchlist, args.db_dir)
     elif args.live:
-        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host, args.debug)
+        run_live(args.relationships, watchlist, args.db_dir, args.prefix, args.host, args.debug, args.more_specific)
     else:
         parser.print_help()
         sys.exit(1)

@@ -54,13 +54,15 @@ def _event_from_data(data: dict, raw: dict) -> Iterator[AnnouncementEvent]:
             )
 
 
-async def live_stream(prefix_filter: Optional[str] = None, host: Optional[str] = None) -> AsyncIterator[AnnouncementEvent]:
+async def live_stream(prefix_filter: Optional[str] = None, host: Optional[str] = None, more_specific: bool = False) -> AsyncIterator[AnnouncementEvent]:
     if websockets is None:
         raise RuntimeError("Install the 'websockets' package to use --live mode (pip install websockets).")
 
     subscribe_msg = {"type": "ris_subscribe", "data": {"type": "UPDATE"}}
     if prefix_filter:
         subscribe_msg["data"]["prefix"] = prefix_filter
+        if more_specific:
+            subscribe_msg["data"]["moreSpecific"] = True
     if host:
         subscribe_msg["data"]["host"] = host
 
