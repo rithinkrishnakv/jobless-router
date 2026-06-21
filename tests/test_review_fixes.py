@@ -88,6 +88,27 @@ def test_real_feed_int_communities_dont_crash():
     assert _format_community(65535) == "65535"
 
 
+def test_rpki_unknown_status_maps_to_not_found():
+    # RIPEstat's real rpki-validation API uses the status string 'unknown'
+    # (not 'not_found') for "no covering ROA exists". Found by running
+    # against live traffic, where this fell through to a confusing
+    # generic UNKNOWN branch with an alarming-sounding note instead of
+    # the correct NOT_FOUND classification.
+    from unittest.mock import patch, MagicMock
+    from jobless_router import rpki
+    from jobless_router.models import RPKIState
+
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"data": {"status": "unknown", "validating_roas": []}}
+    fake_response.raise_for_status.return_value = None
+
+    with patch("jobless_router.rpki.requests.get", return_value=fake_response):
+        verdict = rpki.validate_route("187.249.2.0/24", 32098)
+
+    assert verdict.state == RPKIState.NOT_FOUND, verdict.state
+    assert "no opinion" in verdict.note.lower()
+
+
 def main():
     tests = [
         test_prepend_does_not_hide_real_upstream,
@@ -96,6 +117,7 @@ def main():
         test_valley_check_bridges_unmapped_ixp_hop,
         test_valley_check_bridging_does_not_false_positive,
         test_real_feed_int_communities_dont_crash,
+        test_rpki_unknown_status_maps_to_not_found,
     ]
     for t in tests:
         t()

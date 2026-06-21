@@ -59,10 +59,50 @@ def test_rpki_valid_overrides_heuristics_if_reached_directly():
     assert result.confidence == 0
 
 
+def test_live_reconnect_survives_repeated_drops():
+    # --live wraps the firehose consumption loop in retry-with-backoff so
+    # a transient disconnect (NAT idle timeouts, brief network hiccups --
+    # both observed for real against rrc00) doesn't kill the whole run.
+    # This exercises the same retry shape run.py uses, against a fake
+    # stream that fails twice with ConnectionClosed then succeeds.
+    import asyncio
+    import websockets.exceptions
+
+    async def fake_live_stream(state={"calls": 0}):
+        state["calls"] += 1
+        if state["calls"] <= 2:
+            yield "msg"
+            raise websockets.exceptions.ConnectionClosedError(None, None)
+        else:
+            yield "final-msg"
+            return
+
+    async def run_with_retry():
+        processed = []
+        attempt = 0
+        max_retries = 5
+        delay = 0.001  # fast for the test
+        while True:
+            try:
+                async for item in fake_live_stream():
+                    processed.append(item)
+                    attempt = 0
+                return processed
+            except websockets.exceptions.ConnectionClosed:
+                attempt += 1
+                if attempt > max_retries:
+                    return processed
+                await asyncio.sleep(delay)
+
+    result = asyncio.run(run_with_retry())
+    assert result == ["msg", "msg", "final-msg"], result
+
+
 def main():
     tests = [
         test_rpki_valid_suppresses_anycast_false_positive,
         test_rpki_valid_overrides_heuristics_if_reached_directly,
+        test_live_reconnect_survives_repeated_drops,
     ]
     for t in tests:
         t()

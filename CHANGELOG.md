@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.2.0 -- validated against real live traffic
+
+Everything in this release was found by actually running `--live` against
+the real RIPE RIS Live firehose, not just synthetic data. In rough
+chronological order:
+
+**Connectivity:**
+- Fixed `--live` hanging indefinitely on networks where IPv6 routes but
+  doesn't actually work (common on VirtualBox/VMware NAT) -- now forces
+  IPv4-only resolution (`family=socket.AF_INET`).
+- Raised the websocket handshake/keepalive timeouts for slower/NAT'd paths.
+- Auto-reconnects with exponential backoff (up to 5 attempts) on dropped
+  connections instead of dying -- transient drops are normal for any
+  long-lived streaming connection. Resubscribes fresh each attempt and
+  preserves heartbeat/incident counters across reconnects.
+- Moved `engine.process()`'s blocking RPKI HTTP call off the event loop
+  via `asyncio.to_thread()` -- running it directly inside the coroutine
+  corrupted asyncio's cleanup on Ctrl+C.
+
+**Correctness (the important one):**
+- **Fixed a severe false positive**: Cloudflare's own legitimate,
+  RPKI-VALID announcement of `1.1.1.0/24` was getting labeled
+  `LIKELY_TARGETED_INTERCEPTION`. Root cause: baseline novelty (a
+  never-before-seen upstream -- completely normal anycast/multi-homing
+  behavior) tripped the interest gate even though RPKI had already
+  cryptographically confirmed the route, and the heuristic scorer never
+  checked RPKI validity at all. RPKI VALID now unconditionally overrides
+  both the interest gate and the intent classifier.
+- Fixed real BGP communities crashing parsing (`TypeError`) -- RIPE's live
+  feed sends community values as JSON integers, not the strings the
+  bundled demo data used.
+- Fixed RIPEstat's RPKI status string `"unknown"` (the real, documented
+  value for "no covering ROA exists") being misread as an error -- the
+  code checked for `"not_found"` instead, which the live API never
+  actually sends.
+- The report now shows a dedicated "Baseline check" line explaining
+  baseline-driven flags -- previously, a route with no RPKI opinion that
+  got flagged purely on baseline novelty gave no visible explanation of
+  *why*, even though the engine had computed it internally.
+
+**Usability:**
+- Added `--prefix` (with exact-match client-side filtering, since RIS
+  Live's filter operates at the message level and a single update can
+  legitimately bundle several prefixes sharing one path), `--host`
+  (subscribe to one collector's full traffic instead of one prefix),
+  `--more-specific` (catch sub-prefix hijacks within a watched block),
+  and `--debug` (print every event's score, flagged or not, so silence
+  is verifiable rather than just trusted).
+- Caches RPKI lookups per (prefix, origin) for 5 minutes -- live path
+  churn re-announces the same routes constantly, and querying RIPEstat
+  fresh every time both wasted time and risked rate limits.
+- Colorized ASCII-art startup banner (pyfiglet, falls back to plain text
+  if unavailable).
+
 ## v0.1.1 -- code review fixes
 
 Three real bugs caught in review, all fixed and covered by

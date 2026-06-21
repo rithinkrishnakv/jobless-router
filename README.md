@@ -48,6 +48,12 @@ stopping there.
    review. It deliberately never opens a live BGP session or pushes config
    automatically — false positives in *automated* mitigation can black-hole
    legitimate traffic faster than the hijack would have.
+10. **Operational robustness** — auto-reconnects with backoff through
+    transient websocket drops (NAT idle timeouts are common on long-lived
+    connections) instead of dying; caches RPKI lookups for a few minutes so
+    repeated sightings of the same route don't hammer RIPEstat; `--debug`
+    shows every event's score, flagged or not, so silence is verifiable
+    rather than just trusted.
 
 ## Quick start
 
@@ -70,6 +76,9 @@ python run.py --live
 # and/or see every event's score even when it doesn't get flagged:
 python run.py --live --prefix 1.1.1.0/24
 python run.py --live --host rrc00 --debug
+
+# Catch a sub-prefix carved out of a watched block (the real hijack pattern):
+python run.py --live --prefix 1.0.0.0/8 --more-specific
 ```
 
 ## The bundled demo (`sample_events.jsonl`)
@@ -124,10 +133,14 @@ firehose.py  --> engine.py --(orchestrates)--> rpki.py
 
 ## A note on scope and honesty
 
-This is a genuinely functional detection and reporting pipeline, tested
-end-to-end against synthetic data — but it's a single-operator tool, not a
-substitute for MANRS-style coordinated filtering, and its sample
+This has been tested end-to-end against synthetic data *and* run live
+against the real RIPE RIS Live firehose, where it correctly stayed silent
+on ordinary legitimate traffic (including its own past false positives,
+once found and fixed -- see CHANGELOG.md) and caught real, unscripted
+baseline-deviation events on its own. It's still a single-operator tool,
+not a substitute for MANRS-style coordinated filtering, and its sample
 relationship graph and collector-region map are small/illustrative rather
 than authoritative. Treat its output as a strong lead for a human analyst,
-not an automated verdict, and keep mitigation actions behind a human
+not an automated verdict -- a 40/100 confidence score means exactly that,
+not "confirmed hijack" -- and keep mitigation actions behind a human
 approval gate.
