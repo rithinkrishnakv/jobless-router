@@ -8,11 +8,7 @@ import websockets.exceptions
 from jobless_router.engine import JoblessRouterEngine
 from jobless_router.firehose import replay_file, live_stream
 from jobless_router.models import RPKIState
-
-BANNER = r"""
-   JOBLESS-ROUTER
-   Reincarnated in a Tier-1 Scrubbing Center to Master BGP Flowspec
-"""
+from jobless_router.banner import render_banner
 
 FORCED_STATES = {
     "valid": RPKIState.VALID,
@@ -56,12 +52,15 @@ def run_live(relationships: str, watchlist, db_dir: str, prefix_filter=None, hos
     state = {"count": 0, "incidents": 0}
 
     def debug_print(event, upstream, rpki_verdict, novel, novel_note, ff_score, mitm_score, intent, interesting):
+        upstream_str = f"AS{upstream}" if upstream is not None else "(no upstream, direct peering)"
         print(
-            f"[debug] AS{event.origin_asn} {event.prefix} via AS{upstream} | "
+            f"[debug] AS{event.origin_asn} {event.prefix} via {upstream_str} | "
             f"RPKI={rpki_verdict.state.value} novel={novel} | "
             f"FF={ff_score}/100 MITM={mitm_score}/100 -> {intent.label} | "
             f"interesting={interesting}"
         )
+        if rpki_verdict.state.value == "UNKNOWN":
+            print(f"         RPKI note: {rpki_verdict.note}")
 
     async def _go():
         print("[jobless-router] connecting to RIPE RIS Live firehose...")
@@ -168,7 +167,7 @@ def main():
     parser.add_argument("--db-dir", default=":memory:", help="Directory for sqlite threat/baseline DBs, or ':memory:' for an ephemeral run.")
     args = parser.parse_args()
 
-    print(BANNER)
+    print(render_banner())
     watchlist = _load_watchlist(args.watchlist)
 
     if args.replay:

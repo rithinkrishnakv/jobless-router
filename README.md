@@ -65,6 +65,11 @@ python tests/test_demo.py
 # The real thing -- connects to RIPE RIS Live's public websocket firehose,
 # no API key needed. Requires normal outbound internet access.
 python run.py --live
+
+# Narrow to one prefix or one collector instead of the full global firehose,
+# and/or see every event's score even when it doesn't get flagged:
+python run.py --live --prefix 1.1.1.0/24
+python run.py --live --host rrc00 --debug
 ```
 
 ## The bundled demo (`sample_events.jsonl`)

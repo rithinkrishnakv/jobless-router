@@ -1,3 +1,4 @@
+import time
 from typing import Optional, List
 
 from . import rpki, communities, path_analysis, heuristics, mitigation, report
@@ -6,6 +7,9 @@ from .blast_radius import BlastRadiusTracker
 from .threat_db import ThreatDB
 from .baseline import BaselineStore
 from .models import AnnouncementEvent, RPKIState, Incident
+
+RPKI_CACHE_TTL_SECONDS = 300   # ROAs don't change second-to-second; no need to re-query a route we just checked
+RPKI_CACHE_MAX_ENTRIES = 20000  # crude bound so a long-running session can't grow this unboundedly
 
 
 def _db_path(db_dir: str, name: str) -> str:
@@ -30,9 +34,41 @@ class JoblessRouterEngine:
         self.baseline = BaselineStore(_db_path(db_dir, "jobless_router_baseline.db"))
         self.watchlist = set(watchlist or [])
         self.offline = offline
+        self._rpki_cache = {}  # f"{prefix}|{origin}" -> (RPKIVerdict, expiry_epoch_seconds)
 
     def _on_watchlist(self, prefix: str) -> bool:
         return prefix in self.watchlist
+
+    def _cached_rpki_validate(self, prefix: str, origin: int):
+        """
+        Live BGP path churn re-announces the same (prefix, origin) route
+        constantly -- session resets, minor traffic-engineering tweaks,
+        etc. don't change who's authorized to originate a prefix. Querying
+        RIPEstat fresh for every single repeat wastes time and risks
+        tripping rate limits (which would itself surface as a misleading
+        RPKI=UNKNOWN). Cache for a few minutes per (prefix, origin) pair.
+        """
+        key = f"{prefix}|{origin}"
+        now = time.time()
+        cached = self._rpki_cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+
+        verdict = rpki.validate_route(prefix, origin)
+
+        if len(self._rpki_cache) >= RPKI_CACHE_MAX_ENTRIES:
+            # Crude but cheap: drop anything already expired first; if
+            # that's not enough, just clear it. A long-running session
+            # shouldn't grow this dict forever, and a full LRU is more
+            # machinery than this needs right now.
+            expired = [k for k, (_, exp) in self._rpki_cache.items() if exp <= now]
+            for k in expired:
+                del self._rpki_cache[k]
+            if len(self._rpki_cache) >= RPKI_CACHE_MAX_ENTRIES:
+                self._rpki_cache.clear()
+
+        self._rpki_cache[key] = (verdict, now + RPKI_CACHE_TTL_SECONDS)
+        return verdict
 
     def process(self, event: AnnouncementEvent, forced_rpki: Optional[RPKIState] = None, debug_callback=None) -> Optional[Incident]:
         origin = event.origin_asn
@@ -49,7 +85,7 @@ class JoblessRouterEngine:
         elif self.offline:
             rpki_verdict = rpki.mock_validate_route(event.prefix, origin, RPKIState.UNKNOWN, novel_note)
         else:
-            rpki_verdict = rpki.validate_route(event.prefix, origin)
+            rpki_verdict = self._cached_rpki_validate(event.prefix, origin)
 
         blackhole = communities.has_blackhole_tag(event.communities)
         # RPKI VALID is a cryptographic attestation, not a heuristic -- it
